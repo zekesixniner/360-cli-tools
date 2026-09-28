@@ -1,0 +1,35 @@
+# Titles for titles_in_360 0.1.0. Run:
+#   python titles_in_360.py <video.mp4> --titles titles_en.txt -o <out.mp4>
+#   python titles_in_360.py <video.mp4> --titles titles_en.txt --preview all   (stills only)
+#
+# One sign per row:   <start>  <dur>  <yaw>  "text" or image=file.png   [options]
+#   start  1:35, 95.5, 2375f - or a place in a source clip: GS010109@0:12,
+#          "Take off"@0:05 (clip title) or #3@0:05 (clip number), read from the
+#          <video>.timeline.json that xfade_concat writes
+#   dur    how long it shows, fades included
+#   yaw    0 = ahead, 90 = right, -90 = left, 180 = behind (or front/right/back/left);
+#          several with commas: 0,180
+# Options (on a row, or in a [style] block; later wins:
+#   built-in < command line < [style default] < style=name < the row):
+#   size=5 (degrees; or 120px)  font="Segoe UI Bold" (or a .ttf file)  color=white
+#   opacity=1  outline=3%  outline-color=black  align=center  line-spacing=1.15
+#   box=#003366 (or none)  box-opacity=0.6  padding=40%,20%  radius=25%  border=#ffd700,3
+#   shadow=4%,4% (or none)  shadow-blur=5%  shadow-color=black  shadow-opacity=0.6
+#   glow=10% (or none)  glow-color=white  glow-opacity=0.8
+#   extrude=6%,6% (3D depth, or none)  extrude-color=#555555
+#   pitch=0 (up +)  roll=0  fade=0.5  fade-in=  fade-out=  width= (images)  emoji-font=
+# Lengths are pixels at 8K scale, or a share of the font size (5%). \n in text = new line.
+
+[style default]
+size=5 color=white outline=3% shadow=4%,4% shadow-blur=5%
+
+[style club]
+font="Georgia Bold" color=#ffd700 box=#003366 box-opacity=0.7 border=#ffd700,3 radius=20%
+
+# start   dur   yaw     text                              options
+0:05      4     0       "I was only going to try flying..."
+0:35      3     0       "Right. We're flying."             fade=1
+1:00      4     90      "Look left."
+1:10      3     -90     "No, your other left."
+1:35      3     180     "You didn't look back, did you?"   pitch=-10
+1:40      5     0,180   "Kristianstads Flygklubb"          style=club size=7

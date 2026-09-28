@@ -1,6 +1,6 @@
-# Intervall direkt ur mastern - ingen förklippning behövs.
-# in = start, dur = langd, out = slutpunkt (kontrolleras mot in+dur innan nagot kodas).
-# Lagg till fade=<s> pa en rad for att andra just den overgangen.
+# Highlights taken straight from the master - no pre-cutting needed.
+# in = start, dur = length, out = end point (checked against in+dur before anything is encoded).
+# Add fade=<s> to a row to change the transition into the next clip.
 
 ../GS00080-85_png_ovr.mp4    in=00:00:15  dur=00:00:12  out=00:00:27
 ../GS00080-85_png_ovr.mp4    in=00:01:24  dur=00:00:24  out=00:01:48

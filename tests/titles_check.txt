@@ -1,0 +1,13 @@
+# Signs for tests/check_titles.py on film.mp4 from tests/make_clips.sh.
+# Expected: frames 0-49 and 200-249 copied bit-for-bit; sign 1 in frames 55-104 with a
+# 10-frame fade-in; the ±90 pair in 125-162 (hard cut); the 180 sign (across the seam)
+# in 145-194; the last sign from 250 (1 s fade-in) to the end (it is cut short there,
+# which warns on purpose).
+[style default]
+size=8
+
+# start  dur  yaw    text
+2.2      2    0      "Jaha. Vi flyger."        fade=0.4
+5        1.5  90,-90 "Titta åt vänster."       fade=0
+5.8      2    180    "Du tittade inte bakåt?"  box=black
+10       3    0      "Slut"                    fade-in=1 fade-out=0.2

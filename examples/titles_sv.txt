@@ -1,0 +1,35 @@
+# Titlar för titles_in_360 0.1.0. Kör:
+#   python titles_in_360.py <video.mp4> --titles titles_sv.txt -o <ut.mp4> --lang sv
+#   python titles_in_360.py <video.mp4> --titles titles_sv.txt --preview all   (bara stillbilder)
+#
+# En skylt per rad:   <start>  <längd>  <yaw>  "text" eller image=fil.png   [alternativ]
+#   start  1:35, 95.5, 2375f - eller en plats i ett källklipp: GS010109@0:12,
+#          "Take off"@0:05 (klippets titel) eller #3@0:05 (klippnummer), läses ur
+#          <video>.timeline.json som xfade_concat skriver
+#   längd  hur länge skylten syns, fade inräknad
+#   yaw    0 = rakt fram, 90 = höger, -90 = vänster, 180 = bakom (eller fram/höger/bak/vänster);
+#          flera med komma: 0,180
+# Alternativ (på en rad, eller i ett [style]-block; senare vinner:
+#   inbyggt < kommandoraden < [style default] < style=namn < raden):
+#   size=5 (grader; eller 120px)  font="Segoe UI Bold" (eller en .ttf-fil)  color=white
+#   opacity=1  outline=3%  outline-color=black  align=center  line-spacing=1.15
+#   box=#003366 (eller none)  box-opacity=0.6  padding=40%,20%  radius=25%  border=#ffd700,3
+#   shadow=4%,4% (eller none)  shadow-blur=5%  shadow-color=black  shadow-opacity=0.6
+#   glow=10% (eller none)  glow-color=white  glow-opacity=0.8
+#   extrude=6%,6% (3D-djup, eller none)  extrude-color=#555555
+#   pitch=0 (upp +)  roll=0  fade=0.5  fade-in=  fade-out=  width= (bilder)  emoji-font=
+# Längder är pixlar i 8K-skala, eller andel av teckenstorleken (5%). \n i text = ny rad.
+
+[style default]
+size=5 color=white outline=3% shadow=4%,4% shadow-blur=5%
+
+[style klubb]
+font="Georgia Bold" color=#ffd700 box=#003366 box-opacity=0.7 border=#ffd700,3 radius=20%
+
+# start   längd  yaw    text                              alternativ
+0:05      4      0      "Jag skulle bara provflyga lite..."
+0:35      3      0      "Jaha. Vi flyger."                 fade=1
+1:00      4      90     "Titta åt vänster."
+1:10      3      -90    "Nej, din andra vänster."
+1:35      3      180    "Du tittade inte bakåt, va?"       pitch=-10
+1:40      5      0,180  "Kristianstads Flygklubb"          style=klubb size=7
