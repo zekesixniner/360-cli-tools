@@ -181,7 +181,7 @@ MESSAGES = {
         "err_no_video": "ingen videoström i {path}",
         "err_no_inputs": "behöver minst ett klipp",
         "err_no_output": "-o/--output krävs",
-        "yt_title_placeholder": "<TITEL>",
+        "yt_title_placeholder": "TITEL",
         "yt_speed": "Hastighet",
         "yt_len": "{on}",
         "yt_len_sped": "{on} på skärmen av {rec} inspelat",
