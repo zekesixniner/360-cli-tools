@@ -151,10 +151,19 @@ stops the run with a message listing the ranges that were used. Pass
 4. **Encoding.** Pieces with signs are decoded with NVDEC, taken to the CPU,
    overlaid in 10-bit (`overlay=format=yuv420p10`), and encoded with NVENC. Each
    sign is its own looped image input, faded with `fade=…:alpha=1` and switched
-   on for its exact frames with `enable='between(n,…)'`. The frames are
-   renumbered after the last overlay: `overlay` stamps its output from its own
-   frame sync, and with many signs at once that could make ffmpeg drop frames —
-   a jump in the picture. Any dropped or repeated frame stops the run.
+   on for its exact frames with `enable='between(n,…)'`. Any dropped or
+   repeated frame stops the run.
+
+   Two details matter when the source is an `xfade_concat` output, which is the
+   usual case. Such a file switches encoders where a re-encoded piece meets a
+   copied one, and at every switch ffmpeg would rebuild the filter graph —
+   NVDEC starts a new frame context — restarting every frame counter in it. So
+   frames leave NVDEC as ordinary frames (they go to the CPU for the overlays
+   anyway) and `-reinit_filter 0` keeps the graph from being rebuilt. Second,
+   inside its B-frame stretches such a file carries timestamps in decoding
+   order (see [Limitations](#limitations)), so a seek by time can land a frame
+   or two off. Each re-encoded piece therefore starts decoding at the last safe
+   keyframe before it and skips forward by counting frames, which is exact.
 5. **Joining** is the engine shared with `xfade_concat.py` (`pieces.py`): raw
    Annex B pieces, byte-concatenated into one mux with the source's audio
    copied unchanged, then checked for the exact number of frames that play.
@@ -194,6 +203,11 @@ total before anything is encoded.
   come from the text font unless followed by the emoji selector (✈️).
 - A sign wider than about 120° starts to look stretched at its edges (a warning
   says so); more than 150° is refused.
+- Files joined by `xfade_concat.py` (and this tool's own output) carry
+  decoding-order timestamps inside B-frame stretches of copied footage: the
+  frames are in the right order, but their presentation times are not
+  reordered. ffmpeg and YouTube handle it; this tool works around it when
+  seeking. A proper fix belongs in the shared join.
 - Only video and audio are kept; other streams (GPMF data, timecode) are
   dropped. Spherical metadata is lost as always: run `inject360-inplace` last.
 
@@ -205,7 +219,10 @@ frame:
 
 - stream-copied stretches are **bit-identical** to the source
 - re-encoded stretches stay in step with the source, frame for frame, also
-  with seven overlapping signs in one piece
+  with seven overlapping signs in one piece, on an `xfade_concat` output (a
+  source whose timestamps are in decoding order), in full mode where pieces
+  start between keyframes, and across a mid-stream change that makes current
+  ffmpeg rebuild the filter graph
 - every sign is visible in exactly its frames, including one across the seam
   behind the viewer and one at each end of the file
 - fades ramp linearly over exactly `fade` seconds; `fade=0` switches on and off

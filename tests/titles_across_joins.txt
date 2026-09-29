@@ -1,0 +1,5 @@
+# Signs on both sides of an xfade_concat join (tests/make_clips.sh film.mp4, joined
+# with "film.mp4 in=0 dur=6" + "film.mp4 in=5 dur=7" --fade 1). The re-encoded piece
+# must stay in step with its source although the source has decode-order timestamps.
+4.6   2   0     "Över skarven"   fade=0.4
+5.5   2   180   "Bakom"          fade=0.4

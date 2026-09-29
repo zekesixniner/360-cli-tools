@@ -39,7 +39,7 @@ try:
 except ImportError:  # reported properly in main(), after --lang is known
     Image = None
 
-__version__ = "0.1.1"
+__version__ = "0.1.3"
 
 # --------------------------------------------------------------------------- #
 # messages
@@ -1226,6 +1226,57 @@ def build_plan(src, signs: list[Sign], total: int, smart: bool, min_copy: int,
 # ffmpeg commands
 # --------------------------------------------------------------------------- #
 class TEnc(Encoder):
+    """Pieces for titles_in_360.
+
+    The video these pieces come from is usually an xfade_concat output, which
+    switches parameter sets where a re-encoded piece meets a copied one. At
+    such a switch ffmpeg rebuilds the whole filter graph - always when NVDEC
+    starts a new hardware frame context, and on a colour-metadata change too -
+    and every counter in the graph starts again from 0: setpts=N, enable=n, the
+    fades. The picture then jumps. So frames leave NVDEC as ordinary frames
+    (they go to the CPU for the overlays anyway), and -reinit_filter 0 keeps
+    the graph from being rebuilt for any other change."""
+
+    def input_args(self, clip, frame: int) -> list[str]:
+        """Start decoding at the last safe keyframe at or before `frame`; the
+        chain then skips the frames up to `frame` by count (see skip()).
+
+        Seeking by time is not reliable here: a file joined from raw pieces
+        (an xfade_concat output) carries decode-order timestamps inside its
+        B-frame stretches, so an accurate seek lands a frame or two off. A
+        keyframe's own timestamp is always right, and frames always come out of
+        the decoder in the right order - so keyframe plus a frame count is
+        exact. The seek is made in the file's raw timeline, like a copy piece's."""
+        a = ["-hwaccel", "cuda"] if self.hw else []
+        a += ["-reinit_filter", "0"]
+        k = self.start_keyframe(clip, frame)
+        if k is not None and k > 0:
+            kf = clip.keyframes[k]
+            seek = float(kf.pts * clip.tb) + clip.raw_offset + 0.5 / float(clip.fps)
+            a += ["-ignore_editlist", "1", "-noaccurate_seek", "-ss", f"{seek:.6f}"]
+        elif k is None and frame > 0:
+            # no keyframe known: fall back to an accurate seek by time
+            t0 = (clip.v_start - clip.f_start) + (frame - 0.5) / float(clip.fps)
+            a += ["-ss", f"{t0:.6f}"]
+        return a + ["-i", str(clip.path)]
+
+    @staticmethod
+    def start_keyframe(clip, frame: int) -> int | None:
+        if frame <= 0:
+            return 0
+        ks = [k for k, kf in clip.keyframes.items() if kf.safe and 0 < k <= frame]
+        return max(ks) if ks else None
+
+    def skip(self, clip, frame: int) -> str:
+        """Filters dropping the frames between the keyframe and `frame`."""
+        k = self.start_keyframe(clip, frame)
+        if k is None or frame - k <= 0:
+            return ""
+        return f"trim=start_frame={frame - k},"
+
+    def to_cpu(self) -> str:
+        return f"format={self.planar}"
+
     def overlays(self, p: Piece, signs: list[Sign]):
         """(crop, first frame, frames, fade_in, fade_out) for every sign in piece p,
         frames relative to the piece."""
@@ -1242,12 +1293,13 @@ class TEnc(Encoder):
         if p.kind == "copy":
             return self.copy_cmd(src, p.start, p.frames, out)
         cmd = self.base() + self.input_args(src, p.start)
+        skip = self.skip(src, p.start)
         if p.kind == "plain":
-            return cmd + ["-filter_complex", f"[0:v:0]{RENUMBER}[v]", "-map", "[v]"] + \
+            return cmd + ["-filter_complex", f"[0:v:0]{skip}{RENUMBER}[v]", "-map", "[v]"] + \
                 self.encode_tail(p.frames, out)
         ovs = self.overlays(p, signs)
         fps = str(self.fps)
-        graph = [f"[0:v:0]{RENUMBER},{self.to_cpu()}[b0]"]
+        graph = [f"[0:v:0]{skip}{RENUMBER},{self.to_cpu()}[b0]"]
         ofmt = "yuv420p10" if self.depth == 10 else "yuv420"
         for i, (c, rel, n, fi, fo) in enumerate(ovs, 1):
             cmd += ["-loop", "1", "-framerate", fps, "-i", str(c.png)]
@@ -1259,9 +1311,8 @@ class TEnc(Encoder):
             graph.append(",".join(chain) + f"[o{i}]")
             graph.append(f"[b{i - 1}][o{i}]overlay=x={c.x}:y={c.y}:format={ofmt}:"
                          f"eof_action=pass:enable='between(n,{rel},{rel + n - 1})'[b{i}]")
-        # overlay stamps its output from its own frame sync, not from the main
-        # picture; with many signs that can repeat a timestamp, and ffmpeg then
-        # drops the frame. Renumbering after the last overlay rules it out.
+        # exact frame slots on the way out as well, so nothing downstream
+        # depends on how the overlays' frame sync stamps its output
         graph.append(f"[b{len(ovs)}]{RENUMBER},format={self.encfmt}[v]")
         return cmd + ["-filter_complex", ";".join(graph), "-map", "[v]"] + \
             self.encode_tail(p.frames, out)
@@ -1570,6 +1621,14 @@ def main() -> None:
         scan_spans(args.ffmpeg, src, keyframe_spans(src, windows(signs), total, fps,
                                                     args.gop_window))
     plan = build_plan(src, signs, total, smart, min_copy, fps)
+    # every re-encoded piece starts decoding at a safe keyframe before it
+    need = [p.start for p in plan if p.kind != "copy" and p.start > 0
+            and TEnc.start_keyframe(src, p.start) is None]
+    if need:
+        if not smart:
+            print(t("probing_kf"))
+        scan_spans(args.ffmpeg, src, [(max(0.0, secs(f, fps) + src.v_start - args.gop_window),
+                                       secs(f, fps) + src.v_start + 0.1) for f in need])
     enc = TEnc(args, [src], smart)
     use_audio = bool(src.audio)
     copy_f = sum(p.frames for p in plan if p.kind == "copy")
