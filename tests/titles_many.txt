@@ -1,0 +1,9 @@
+# Seven overlapping signs in one piece (15 overlays: signs behind the viewer are
+# split at the seam). Checks that the re-encoded picture stays in step.
+2.0   3   180  "Du tittade inte bakåt, va?"
+2.4   3   180  "Du tittade inte bakåt, va?"
+2.8   3   180  "Du tittade inte bakåt, va?"
+3.2   3   180  "Du tittade inte bakåt, va?"
+3.6   3   180  "Du tittade inte bakåt, va?"
+3.8   5   0,180 "Kristianstads Flygklubb"
+4.0   3   180  "Du tittade inte bakåt, va?"

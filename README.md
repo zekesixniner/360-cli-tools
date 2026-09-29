@@ -40,8 +40,11 @@ up to the nearest keyframe — is re-encoded. Every piece is written as a raw
 HEVC (Annex B) bitstream with its own parameter sets, and the pieces are joined
 by plain byte concatenation into one final mux that re-derives all timing at a
 constant frame rate. That is what lets the camera's own bitstream and NVENC's
-re-encodes share one file with no timestamp problems, and it is checked at the
-end by counting the frames that actually play. Keyframes are found by reading
+re-encodes share one file with no timestamp problems. Every re-encoded piece is
+checked for its exact frame count and for frames ffmpeg dropped or repeated
+along the way (which would show as a jump in the picture; the run stops with
+the command that caused it), and the finished file for the frames that
+actually play. Keyframes are found by reading
 bitstream headers, never by decoding, so probing an hour of 8K takes seconds.
 The details are in [docs/xfade_concat.md](docs/xfade_concat.md#how-it-works).
 

@@ -39,7 +39,7 @@ try:
 except ImportError:  # reported properly in main(), after --lang is known
     Image = None
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # --------------------------------------------------------------------------- #
 # messages
@@ -1259,7 +1259,10 @@ class TEnc(Encoder):
             graph.append(",".join(chain) + f"[o{i}]")
             graph.append(f"[b{i - 1}][o{i}]overlay=x={c.x}:y={c.y}:format={ofmt}:"
                          f"eof_action=pass:enable='between(n,{rel},{rel + n - 1})'[b{i}]")
-        graph.append(f"[b{len(ovs)}]format={self.encfmt}[v]")
+        # overlay stamps its output from its own frame sync, not from the main
+        # picture; with many signs that can repeat a timestamp, and ffmpeg then
+        # drops the frame. Renumbering after the last overlay rules it out.
+        graph.append(f"[b{len(ovs)}]{RENUMBER},format={self.encfmt}[v]")
         return cmd + ["-filter_complex", ";".join(graph), "-map", "[v]"] + \
             self.encode_tail(p.frames, out)
 

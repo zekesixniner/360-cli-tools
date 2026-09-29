@@ -151,7 +151,10 @@ stops the run with a message listing the ranges that were used. Pass
 4. **Encoding.** Pieces with signs are decoded with NVDEC, taken to the CPU,
    overlaid in 10-bit (`overlay=format=yuv420p10`), and encoded with NVENC. Each
    sign is its own looped image input, faded with `fade=…:alpha=1` and switched
-   on for its exact frames with `enable='between(n,…)'`.
+   on for its exact frames with `enable='between(n,…)'`. The frames are
+   renumbered after the last overlay: `overlay` stamps its output from its own
+   frame sync, and with many signs at once that could make ffmpeg drop frames —
+   a jump in the picture. Any dropped or repeated frame stops the run.
 5. **Joining** is the engine shared with `xfade_concat.py` (`pieces.py`): raw
    Annex B pieces, byte-concatenated into one mux with the source's audio
    copied unchanged, then checked for the exact number of frames that play.
@@ -201,6 +204,8 @@ Verified with synthetic clips (`tests/make_clips.sh`) and
 frame:
 
 - stream-copied stretches are **bit-identical** to the source
+- re-encoded stretches stay in step with the source, frame for frame, also
+  with seven overlapping signs in one piece
 - every sign is visible in exactly its frames, including one across the seam
   behind the viewer and one at each end of the file
 - fades ramp linearly over exactly `fade` seconds; `fade=0` switches on and off

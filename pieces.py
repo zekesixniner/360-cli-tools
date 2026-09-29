@@ -75,6 +75,9 @@ MESSAGES = {
         "err_no_video": "no video stream in {path}",
         "err_time": "invalid {what} value '{val}' (use seconds like 1.5 or frames like 45f)",
         "err_frames": "{name}: expected {want} frames, got {got}",
+        "err_dropdup": "{name}: ffmpeg dropped {drop} and duplicated {dup} frame(s) while "
+                       "rendering this piece - the picture would jump, so the run stops here. "
+                       "Please report it with the command above (-v shows it).",
     },
     "sv": {
         "cached": "  (cachad)",
@@ -94,6 +97,9 @@ MESSAGES = {
         "err_no_video": "ingen videoström i {path}",
         "err_time": "ogiltigt värde för {what}: '{val}' (sekunder som 1.5 eller rutor som 45f)",
         "err_frames": "{name}: väntade {want} rutor, fick {got}",
+        "err_dropdup": "{name}: ffmpeg tappade {drop} och dubblerade {dup} ruta/rutor när "
+                       "biten renderades - bilden skulle hoppa, så körningen stoppas här. "
+                       "Rapportera det med kommandot ovan (-v visar det).",
     },
 }
 LANG = "en"
@@ -586,7 +592,24 @@ def render_pieces(pieces: list, make_cmd, label, verbose: bool) -> None:
             continue
         print(head)
         tmp = p.file.with_name(p.file.stem + ".partial.hevc")
-        run(make_cmd(p, tmp), verbose)
+        cmd = make_cmd(p, tmp)
+        if verbose:
+            print("  $ " + fmt_cmd(cmd))
+        # -progress reports ffmpeg's own count of frames it dropped or repeated to
+        # keep a constant rate. Every piece is renumbered to exact frame slots, so
+        # either count being non-zero means frames went missing or were doubled -
+        # a jump in the picture that the frame count alone cannot see, because
+        # -frames:v fills the piece up regardless.
+        res = subprocess.run(cmd[:1] + ["-progress", "pipe:1"] + cmd[1:],
+                             stdout=subprocess.PIPE, text=True, errors="replace")
+        if res.returncode != 0:
+            die("err_ffmpeg", code=res.returncode, cmd=fmt_cmd(cmd))
+        stats = dict(ln.split("=", 1) for ln in res.stdout.splitlines() if "=" in ln)
+        drop, dup = int(stats.get("drop_frames", 0) or 0), int(stats.get("dup_frames", 0) or 0)
+        if drop or dup:
+            if not verbose:
+                print("  $ " + fmt_cmd(cmd), file=sys.stderr)
+            die("err_dropdup", name=tmp.name, drop=drop, dup=dup)
         got = annexb_frames(tmp)
         if got != p.frames:
             print(t("err_frames", name=tmp.name, want=p.frames, got=got), file=sys.stderr)
