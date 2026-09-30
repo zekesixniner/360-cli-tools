@@ -10,6 +10,7 @@ rest, frame-exact.
 | `xfade_concat.py` | joins clips with soft transitions; ranges straight from a master, speed changes, YouTube chapters | [docs/xfade_concat.md](docs/xfade_concat.md) |
 | `titles_in_360.py` | puts titles, signs and logos into the 360° picture, undistorted, in any direction | [docs/titles_in_360.md](docs/titles_in_360.md) |
 | `pieces.py` | the engine both share — not run on its own | |
+| `gpu_check.py` | tests what your GPU and ffmpeg can do, and which switches to use | [below](#will-it-work-on-my-gpu) |
 
 ```powershell
 python $HOME\bin\xfade_concat.py --list clips.txt -o flight.mp4 --fade-in 1 --fade-out 1
@@ -57,16 +58,16 @@ run resumes where it stopped.
 
 ## Requirements
 
-- Windows 10/11, NVIDIA GPU with HEVC NVENC (10-bit needs Turing / RTX 20 or newer)
-- ffmpeg with `hevc_nvenc` on PATH, e.g. the gyan.dev build in `C:\ffmpeg\bin`.
-  Without NVENC, libx265 is used automatically (CPU, slow)
-- Python 3.9+ for Windows
+- An NVIDIA GPU with HEVC NVENC, for speed. Whether a card can also do 10-bit
+  and 8K depends on its generation — [`gpu_check.py`](#will-it-work-on-my-gpu)
+  tells you in half a minute. Without one, libx265 is used (CPU, slow)
+- ffmpeg with `hevc_nvenc` on PATH, e.g. the gyan.dev build in `C:\ffmpeg\bin` on
+  Windows, or the distribution's ffmpeg on Linux
+- Python 3.9+
 - [Pillow](https://pypi.org/project/pillow/) for `titles_in_360.py`
   (`python -m pip install pillow`); `xfade_concat.py` needs only the standard library
-
-The tools run on native Windows, from PowerShell: NVDEC/NVENC do not work under
-WSL1. Under Linux or WSL they still run, on the CPU (`--encoder x265`), which is
-how they are tested.
+- Windows 10/11 is what the maintainer runs. Linux and WSL2 are supported too,
+  see [Linux and WSL2](#linux-and-wsl2). NVDEC/NVENC do not work under WSL1
 
 ## Installation
 
@@ -101,6 +102,99 @@ python $HOME\bin\titles_in_360.py --help
 Nothing is changed in PowerShell's settings, so this works under the default
 execution policy. (A shorter command — a function in your PowerShell profile,
 say — needs a policy that lets the profile run; that is your call to make.)
+
+## Linux and WSL2
+
+The scripts are plain Python and ffmpeg, so they run the same way on Linux — no
+copying to another folder, just run them from the clone. Only NVIDIA is
+supported for hardware encoding (`hevc_nvenc`); AMD and Intel (VAAPI/QSV) would
+need changes in `pieces.py`. Everything else falls back to libx265.
+
+```bash
+# Debian / Ubuntu (also inside WSL2)
+sudo apt install ffmpeg python3 python3-pil fonts-dejavu fonts-noto-color-emoji
+git clone https://github.com/zekesixniner/360-cli-tools.git ~/dev/360-cli-tools
+cd ~/dev/360-cli-tools
+python3 gpu_check.py                       # what can this machine do?
+python3 xfade_concat.py --help
+```
+
+(`python3-pil` is Pillow, needed only for `titles_in_360.py`. If you prefer a
+virtual environment: `python3 -m venv ~/.venvs/360 && ~/.venvs/360/bin/pip install pillow`.)
+
+**The GPU.** On a normal Linux machine you need the NVIDIA driver (`nvidia-smi`
+must work) and an ffmpeg built with NVENC; the distribution's usually is. Under
+**WSL2** the driver is the ordinary Windows driver — do not install one inside
+WSL — and `nvidia-smi` inside WSL should list the card. NVENC is reported to
+work under WSL2, but the maintainer has not tried it: run `gpu_check.py` and
+tell us what it says ([see below](#will-it-work-on-my-gpu)).
+
+**Fonts.** Without `font=` / `--font`, `titles_in_360.py` uses the first it finds
+of Segoe UI, Arial, Helvetica, DejaVu Sans, Liberation Sans and Noto Sans (bold),
+so on Linux you get DejaVu Sans Bold. Asking for a font that is not installed is
+an error, so **the examples' `font="Georgia Bold"` needs changing on Linux**:
+
+```bash
+python3 titles_in_360.py --list-fonts            # names that can be used
+python3 titles_in_360.py --list-fonts dejavu     # filter
+#   in a titles file:  font="DejaVu Serif Bold"   or   font=/path/to/file.ttf
+```
+
+Colour emoji need `fonts-noto-color-emoji`. Fonts are read from `/usr/share/fonts`,
+`/usr/local/share/fonts`, `~/.fonts` and `~/.local/share/fonts`; under WSL2
+Windows' own fonts can be reached by copying them into `~/.local/share/fonts`
+(mind their licences).
+
+**Where the files live.** Work in WSL's own file system (`~/...`), not on
+`/mnt/c/...`: the pieces are big, and access across that boundary is many times
+slower. Put the clips and the output there, or keep them on Windows and move
+only the cache: `--work-dir ~/work/flight_work`. The default is `<output>_work`
+next to the output.
+
+## Will it work on my GPU?
+
+```bash
+python3 gpu_check.py            # Windows: python gpu_check.py
+```
+
+It makes the same calls the tools make — NVENC HEVC with the tools' own settings,
+NVDEC decoding, and the whole NVDEC → CPU → NVENC chain — at 8K, for 8-bit and
+10-bit, on a few synthetic frames (about half a minute). When something fails it
+says which switch to use, and whether the trouble is 8K as such or NVENC as such
+(it repeats a failed 8K test at half size). Exit code 0 means everything tested
+works. `--size`, `--depth`, `--ffmpeg`, `--lang sv` and `-v` (shows the ffmpeg
+commands) are available.
+
+| the check says | what to do |
+|---|---|
+| everything ok | nothing, the defaults are right |
+| NVDEC fails | `--cpu-decode` (CPU decodes, NVENC still encodes) |
+| 10-bit NVENC fails, 8-bit works | use `--encoder x265` for 10-bit footage |
+| 8K fails but half size works | the card cannot encode 8K: `--encoder x265` |
+| no driver / no `hevc_nvenc` | `--encoder x265` (this is also what `auto` does without `hevc_nvenc`) |
+
+The same test by hand, without the script (8-bit: `-pix_fmt nv12 -profile:v main`):
+
+```bash
+ffmpeg -f lavfi -i testsrc2=s=7680x3840:r=25 -frames:v 25 -pix_fmt p010le \
+       -c:v hevc_nvenc -profile:v main10 t.mp4
+```
+
+If that writes `t.mp4`, NVENC can do 8K 10-bit on this machine. `Frame Dimension`
+or `not supported` in the error means the card cannot; `Cannot load libcuda` or
+`No capable devices` means the driver is missing or not visible.
+
+### Tested on
+
+| system | what works | by |
+|---|---|---|
+| RTX 2080 Ti, Windows, gyan.dev ffmpeg | NVDEC + NVENC, 8K, real GoPro MAX2 films (xfade and titles) | maintainer |
+| Ubuntu (WSL), ffmpeg 6.1, CPU only (`--encoder x265`) | everything, on synthetic clips (the test suite below) | maintainer |
+| any other card, native Linux, WSL2 with a GPU | **not tested yet** | |
+
+Got it running on something else — or not? Open an issue with the output of
+`python3 gpu_check.py` (the **compatibility report** template asks for exactly
+that) and it goes in this table.
 
 ## Language
 
@@ -155,7 +249,10 @@ footage. Since `pieces.py` 1.1 the output MP4s are no longer bit-identical to
 before, by design (new `ctts`/edit list in moov); the `frames=` hash in
 `summary.txt` — the decoded frames, timestamps ignored — is what must not change.
 
-The NVENC/NVDEC path needs testing on the GPU machine.
+`gpu_check.py` is tested against stub ffmpegs that fail in each of the ways it
+reports (8K refused, no 10-bit, no NVDEC, broken chain, no device), and on a
+machine without a GPU. The NVENC/NVDEC path itself needs testing on GPU
+machines.
 
 ## History
 
