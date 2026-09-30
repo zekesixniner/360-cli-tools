@@ -13,8 +13,10 @@ re-encoding all of them. They share one idea, implemented here once:
     in-band - no container, so no timestamps to rebase and no edit lists to
     inherit
   * join the pieces by plain byte concatenation into one final mux that
-    re-derives all timing at a constant frame rate, then count the frames that
-    actually play
+    re-derives all timing at a constant frame rate, read the picture order out
+    of the slice headers while they stream past and write it into the file as
+    presentation times (ffmpeg cannot do that for raw HEVC), then count the
+    frames that actually play
 
 This module is not run on its own. Keep it next to the scripts that import it.
 """
@@ -25,15 +27,17 @@ import json
 import math
 import os
 import re
+import itertools
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 RENUMBER = "setpts=N/FRAME_RATE/TB"  # hw-frame safe (touches timestamps only)
 
@@ -66,6 +70,11 @@ MESSAGES = {
                           "actually shown - likely cut mid-GOP from a master (hidden pre-roll "
                           "behind an edit list); using the real, playable count",
         "warn_dts": "warning: the join reported timestamp problems:\n{log}",
+        "warn_order": "warning: {name}: could not write presentation times into the file ({why}). "
+                      "Every frame still plays in the right order, but inside B-frame stretches "
+                      "the timestamps are in decoding order (a seek by time can land a frame or "
+                      "two off)",
+        "note_order": "  presentation times: {n} frames reordered, reorder delay {delay} frame(s)",
         "err_ffmpeg": "ffmpeg failed (exit {code}):\n  {cmd}",
         "err_ffprobe": "ffprobe failed on {path}:\n{err}",
         "err_not_found": "'{exe}' not found (add C:\\ffmpeg\\bin to PATH or pass --ffmpeg/--ffprobe)",
@@ -88,6 +97,11 @@ MESSAGES = {
                           "faktiskt - troligen klippt mitt i en GOP från ett master (dolt förspel "
                           "bakom en edit-list); använder det riktiga, spelbara antalet",
         "warn_dts": "varning: skarvningen rapporterade tidsstämpelproblem:\n{log}",
+        "warn_order": "varning: {name}: kunde inte skriva in visningstider i filen ({why}). "
+                      "Alla rutor spelas fortfarande i rätt ordning, men i B-frame-sträckor "
+                      "ligger tidsstämplarna i avkodningsordning (en sökning på tid kan hamna "
+                      "en eller två rutor fel)",
+        "note_order": "  visningstider: {n} rutor omordnade, omordningsfördröjning {delay} ruta/rutor",
         "err_ffmpeg": "ffmpeg misslyckades (felkod {code}):\n  {cmd}",
         "err_ffprobe": "ffprobe misslyckades för {path}:\n{err}",
         "err_not_found": "hittar inte '{exe}' (lägg C:\\ffmpeg\\bin i PATH eller ange --ffmpeg/--ffprobe)",
@@ -579,6 +593,466 @@ def annexb_frames(path: Path) -> int:
     return count
 
 
+# --------------------------------------------------------------------------- #
+# presentation order
+#
+# Raw HEVC carries no timestamps, and ffmpeg cannot derive presentation times
+# from it: across B-frame stretches the final mux writes pts = dts, so the
+# frames sit in the right order but their timestamps are in decoding order
+# (0, 1536, 1024, 512, ...). The fix has two halves:
+#
+#   * PictureScanner reads the picture order count (POC) out of every picture's
+#     slice header while the pieces are streamed into the join - no decoding,
+#     and it needs only the few SPS/PPS fields that precede the POC;
+#   * set_presentation_order() writes the result into the finished mp4's moov as
+#     a composition-offset table (ctts) and an edit list, the way any muxer that
+#     knows about B-frames does it. mdat is not touched, so the bitstream - and
+#     with it every decoded frame - stays exactly what it was; the decoding
+#     timestamps stay on the constant-rate grid that keeps pieces with
+#     different B-frame depths from colliding.
+# --------------------------------------------------------------------------- #
+_START_CODE = b"\x00\x00\x01"
+
+
+def _unescape(data: bytes) -> bytes:
+    """Drop emulation-prevention bytes (00 00 03 -> 00 00)."""
+    return data.replace(b"\x00\x00\x03", b"\x00\x00")
+
+
+class _Bits:
+    """MSB-first reader over an RBSP."""
+
+    def __init__(self, data: bytes):
+        self.value = int.from_bytes(data, "big")
+        self.size = len(data) * 8
+        self.pos = 0
+
+    def u(self, n: int) -> int:
+        if self.pos + n > self.size:
+            raise ValueError("truncated parameter set or slice header")
+        self.pos += n
+        return (self.value >> (self.size - self.pos)) & ((1 << n) - 1)
+
+    def ue(self) -> int:
+        zeros = 0
+        while self.u(1) == 0:
+            zeros += 1
+            if zeros > 32:
+                raise ValueError("invalid Exp-Golomb code")
+        return (1 << zeros) - 1 + self.u(zeros)
+
+
+def _parse_sps(nal: bytes) -> tuple[int, tuple[int, int]]:
+    """-> (sps id, (log2_max_pic_order_cnt_lsb, separate_colour_plane_flag))."""
+    b = _Bits(_unescape(nal[2:]))
+    b.u(4)                               # sps_video_parameter_set_id
+    sub_layers = b.u(3)                  # sps_max_sub_layers_minus1
+    b.u(1)                               # sps_temporal_id_nesting_flag
+    b.u(96)                              # general profile_tier_level
+    flags = [(b.u(1), b.u(1)) for _ in range(sub_layers)]
+    if sub_layers:
+        for _ in range(sub_layers, 8):
+            b.u(2)
+    for profile_present, level_present in flags:
+        if profile_present:
+            b.u(88)
+        if level_present:
+            b.u(8)
+    sps_id = b.ue()
+    chroma = b.ue()                      # chroma_format_idc
+    separate = b.u(1) if chroma == 3 else 0
+    b.ue()
+    b.ue()                               # picture width, height
+    if b.u(1):                           # conformance_window_flag
+        for _ in range(4):
+            b.ue()
+    b.ue()
+    b.ue()                               # bit depths
+    return sps_id, (b.ue() + 4, separate)
+
+
+def _parse_pps(nal: bytes) -> tuple[int, tuple[int, int, int]]:
+    """-> (pps id, (sps id, output_flag_present_flag, num_extra_slice_header_bits))."""
+    b = _Bits(_unescape(nal[2:]))
+    pps_id = b.ue()
+    sps_id = b.ue()
+    b.u(1)                               # dependent_slice_segments_enabled_flag
+    return pps_id, (sps_id, b.u(1), b.u(3))
+
+
+class PictureScanner:
+    """Reads one raw Annex B piece as a stream and records, for every picture in
+    decoding order, which coded video sequence it belongs to and its POC.
+
+    Everything is derived as the HEVC spec defines it (8.3.1). The first picture
+    of a piece must be a keyframe and starts a new sequence, which is also how
+    the pieces behave in the joined file: each one is complete in itself, so all
+    of it is shown before the next one begins. Anything the scanner cannot vouch
+    for - a missing parameter set, a picture that is decoded but never shown -
+    raises ValueError, and the join then keeps the timestamps ffmpeg gave it."""
+
+    _HEADER = 20  # bytes after the start code that hold a first slice's POC
+
+    def __init__(self):
+        self.buf = bytearray()
+        self.sps: dict = {}
+        self.pps: dict = {}
+        self.pics: list[tuple[int, int]] = []  # (sequence, poc), decoding order
+        self.sequences = 0
+        self._new_sequence = True   # next keyframe starts one (piece start, end of sequence)
+        self._skip_rasl = False
+        self._prev_tid0 = 0
+
+    def feed(self, chunk: bytes, final: bool = False) -> None:
+        buf = self.buf
+        buf += chunk
+        pos = 0
+        while True:
+            start = buf.find(_START_CODE, pos)
+            if start < 0:
+                keep = max(pos, len(buf) - 2)  # a start code may be split across chunks
+                break
+            head = start + 3
+            if head + 2 > len(buf):
+                keep = start
+                break
+            nal_type = (buf[head] >> 1) & 0x3F
+            if nal_type < 32:
+                if head + self._HEADER > len(buf) and not final:
+                    keep = start
+                    break
+                self._slice(nal_type, buf, head)
+                pos = head + 2
+            else:
+                end = buf.find(_START_CODE, head + 2)
+                if end < 0 and not final:
+                    keep = start
+                    break
+                if end < 0:
+                    end = len(buf)
+                self._other(nal_type, bytes(buf[head:end]))
+                pos = end
+        del buf[:keep]
+
+    def _other(self, nal_type: int, nal: bytes) -> None:
+        if (nal[0] & 1) or (nal[1] >> 3):        # nuh_layer_id > 0
+            return
+        if nal_type == 33:
+            sps_id, sps = _parse_sps(nal)
+            self.sps[sps_id] = sps
+        elif nal_type == 34:
+            pps_id, pps = _parse_pps(nal)
+            self.pps[pps_id] = pps
+        elif nal_type in (36, 37):                # end of sequence / bitstream
+            self._new_sequence = True
+
+    def _slice(self, nal_type: int, buf: bytearray, head: int) -> None:
+        if (buf[head] & 1) or (buf[head + 1] >> 3):   # nuh_layer_id > 0
+            return
+        tid = (buf[head + 1] & 7) - 1
+        rest = bytes(buf[head + 2:head + self._HEADER])
+        if not rest or not rest[0] & 0x80:            # not a picture's first slice
+            return
+        bits = _Bits(_unescape(rest))
+        bits.u(1)                                     # first_slice_segment_in_pic_flag
+        irap = 16 <= nal_type <= 23
+        if irap:
+            bits.u(1)                                 # no_output_of_prior_pics_flag
+        pps = self.pps.get(bits.ue())
+        if pps is None or pps[0] not in self.sps:
+            raise ValueError("slice refers to a parameter set that was never sent")
+        log2_lsb, separate = self.sps[pps[0]]
+        bits.u(pps[2])                                # slice_reserved_flag[]
+        bits.ue()                                     # slice_type
+        if pps[1] and not bits.u(1):                  # pic_output_flag
+            raise ValueError("a picture is marked as not to be output")
+        if separate:
+            bits.u(2)                                 # colour_plane_id
+        max_lsb = 1 << log2_lsb
+        lsb = 0 if nal_type in (19, 20) else bits.u(log2_lsb)
+
+        if irap:
+            if nal_type > 21:
+                raise ValueError("reserved keyframe type")
+            # IDR and BLA always start a coded video sequence; a CRA only when
+            # it is the first picture of the stream or follows an end-of-sequence
+            starts = nal_type != 21 or self._new_sequence
+            self._new_sequence = False
+            self._skip_rasl = starts
+            if starts:
+                self.sequences += 1
+        else:
+            if self.sequences == 0:
+                raise ValueError("a piece does not start with a keyframe")
+            if nal_type in (8, 9) and self._skip_rasl:
+                raise ValueError("leading pictures that a decoder would skip")
+            starts = False
+
+        if starts:
+            msb = 0
+        else:
+            prev_lsb = self._prev_tid0 & (max_lsb - 1)
+            prev_msb = self._prev_tid0 - prev_lsb
+            if lsb < prev_lsb and prev_lsb - lsb >= max_lsb // 2:
+                msb = prev_msb + max_lsb
+            elif lsb > prev_lsb and lsb - prev_lsb > max_lsb // 2:
+                msb = prev_msb - max_lsb
+            else:
+                msb = prev_msb
+        poc = msb + lsb
+        # prevTid0Pic: lowest temporal layer, and not a leading or sub-layer
+        # non-reference picture
+        if tid == 0 and nal_type not in (6, 7, 8, 9) and not (nal_type < 16 and nal_type % 2 == 0):
+            self._prev_tid0 = poc
+        self.pics.append((self.sequences, poc))
+
+
+class PresentationOrder:
+    """Collects the picture order of every piece while the join streams them.
+
+    `problem` says why the order could not be worked out, if it could not - the
+    join must never fail because of it, so every error ends up there."""
+
+    def __init__(self):
+        self.pics: list[tuple[int, int]] = []  # (global sequence, poc), decoding order
+        self.problem: str | None = None
+        self._scan: PictureScanner | None = None
+        self._sequences = 0
+
+    def start_piece(self) -> None:
+        self._scan = PictureScanner() if self.problem is None else None
+
+    def feed(self, chunk: bytes) -> None:
+        if self._scan is not None:
+            try:
+                self._scan.feed(chunk)
+            except ValueError as e:
+                self.fail(e)
+
+    def end_piece(self) -> None:
+        scan, self._scan = self._scan, None
+        if scan is None:
+            return
+        try:
+            scan.feed(b"", final=True)
+        except ValueError as e:
+            self.fail(e)
+            return
+        self.pics += [(self._sequences + seq, poc) for seq, poc in scan.pics]
+        self._sequences += scan.sequences
+
+    def fail(self, why) -> None:
+        self.problem = self.problem or str(why)
+        self._scan = None
+        self.pics = []
+
+
+def display_ranks(pics: list[tuple[int, int]]) -> list[int]:
+    """rank[i] = display position of the i-th picture in decoding order.
+
+    `pics` is (sequence, poc) per picture; a sequence is shown in POC order and
+    sequences follow each other."""
+    ranks = [0] * len(pics)
+    i = 0
+    while i < len(pics):
+        j = i
+        while j < len(pics) and pics[j][0] == pics[i][0]:
+            j += 1
+        order = sorted(range(i, j), key=lambda k: pics[k][1])
+        if len({pics[k][1] for k in order}) != len(order):
+            raise ValueError("two pictures of one sequence have the same order count")
+        for offset, k in enumerate(order):
+            ranks[k] = i + offset
+        i = j
+    return ranks
+
+
+def _mp4_boxes(data: bytes, start: int, end: int):
+    """(type, offset, header size, end) of each box between start and end."""
+    pos = start
+    while pos + 8 <= end:
+        size, typ = struct.unpack_from(">I4s", data, pos)
+        header = 8
+        if size == 1:
+            size, header = struct.unpack_from(">Q", data, pos + 8)[0], 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            raise ValueError("damaged mp4 box")
+        yield typ, pos, header, pos + size
+        pos += size
+
+
+def _mp4_box(typ: bytes, payload: bytes) -> bytes:
+    if 8 + len(payload) > 0xFFFFFFFF:
+        raise ValueError("mp4 box too large")
+    return struct.pack(">I4s", 8 + len(payload), typ) + payload
+
+
+def _mp4_kids(box: bytes) -> list[tuple[bytes, bytes]]:
+    """Children of a plain container box as (type, complete box bytes)."""
+    header = 16 if struct.unpack_from(">I", box)[0] == 1 else 8
+    return [(typ, box[off:end]) for typ, off, _, end in _mp4_boxes(box, header, len(box))]
+
+
+def _mp4_rebuild(box: bytes, edit) -> bytes:
+    """Container `box` again, with its children passed through edit(kids)."""
+    return _mp4_box(box[4:8], b"".join(b for _, b in edit(_mp4_kids(box))))
+
+
+def _mp4_find(box: bytes, path: list[bytes]) -> bytes | None:
+    for typ in path:
+        found = [b for t, b in _mp4_kids(box) if t == typ]
+        if not found:
+            return None
+        box = found[0]
+    return box
+
+
+def _mp4_payload(box: bytes) -> bytes:
+    return box[16 if struct.unpack_from(">I", box)[0] == 1 else 8:]
+
+
+def _frame_delta(trak: bytes) -> tuple[int, int]:
+    """-> (samples, ticks per sample) of a constant-rate track, from its stts."""
+    stts = _mp4_find(trak, [b"mdia", b"minf", b"stbl", b"stts"])
+    if stts is None:
+        raise ValueError("the video track has no stts")
+    body = _mp4_payload(stts)
+    count = struct.unpack_from(">I", body, 4)[0]
+    runs = [struct.unpack_from(">II", body, 8 + 8 * k) for k in range(count)]
+    deltas = {delta for _, delta in runs}
+    if len(deltas) != 1 or 0 in deltas:
+        raise ValueError("the video track does not have a constant frame duration")
+    return sum(n for n, _ in runs), deltas.pop()
+
+
+def _shift_edit_list(edts: bytes, shift: int) -> bytes:
+    """Every non-empty edit now starts `shift` ticks later in the media."""
+    def edit(kids):
+        out = []
+        for typ, box in kids:
+            if typ == b"elst":
+                body = bytearray(_mp4_payload(box))
+                version = body[0]
+                fmt, size = (">Iihh", 12) if version == 0 else (">Qqhh", 20)
+                for k in range(struct.unpack_from(">I", body, 4)[0]):
+                    at = 8 + size * k
+                    duration, media_time, *rate = struct.unpack_from(fmt, body, at)
+                    if media_time != -1:
+                        media_time += shift
+                        if version == 0 and media_time > 0x7FFFFFFF:
+                            raise ValueError("edit list out of range")
+                        struct.pack_into(fmt, body, at, duration, media_time, *rate)
+                box = _mp4_box(b"elst", bytes(body))
+            out.append((typ, box))
+        return out
+    return _mp4_rebuild(edts, edit)
+
+
+def _retime_video_track(trak: bytes, ranks: list[int], delay: int) -> bytes:
+    samples, frame = _frame_delta(trak)
+    if samples != len(ranks):
+        raise ValueError(f"the file has {samples} video samples, the pieces have {len(ranks)} pictures")
+    shift = delay * frame
+
+    # composition offset = presentation slot - decoding slot, pushed `delay`
+    # frames up so that no offset is negative (version 0 of the box)
+    runs = [(len(list(g)), offset * frame)
+            for offset, g in itertools.groupby(ranks[i] + delay - i for i in range(samples))]
+    ctts = _mp4_box(b"ctts", struct.pack(">II", 0, len(runs))
+                    + b"".join(struct.pack(">II", n, offset) for n, offset in runs))
+
+    def fix_stbl(kids):
+        out = [(t, b) for t, b in kids if t != b"ctts"]
+        at = next((k for k, (t, _) in enumerate(out) if t == b"stts"), None)
+        if at is None:
+            raise ValueError("the video track has no stts")
+        out.insert(at + 1, (b"ctts", ctts))
+        return out
+
+    def fix_minf(kids):
+        return [(t, _mp4_rebuild(b, fix_stbl) if t == b"stbl" else b) for t, b in kids]
+
+    def fix_mdia(kids):
+        return [(t, _mp4_rebuild(b, fix_minf) if t == b"minf" else b) for t, b in kids]
+
+    def fix_trak(kids):
+        out = []
+        for typ, box in kids:
+            if typ == b"mdia":
+                box = _mp4_rebuild(box, fix_mdia)
+            elif typ == b"edts":
+                box = _shift_edit_list(box, shift)
+            out.append((typ, box))
+        if not any(t == b"edts" for t, _ in out):
+            tkhd = next(b for t, b in out if t == b"tkhd")
+            body = _mp4_payload(tkhd)
+            duration = struct.unpack_from(">I", body, 20)[0] if body[0] == 0 \
+                else struct.unpack_from(">Q", body, 28)[0]
+            elst = _mp4_box(b"elst", struct.pack(">IIIiHH", 0, 1, duration, shift, 1, 0))
+            at = next(k for k, (t, _) in enumerate(out) if t == b"tkhd")
+            out.insert(at + 1, (b"edts", _mp4_box(b"edts", elst)))
+        return out
+
+    return _mp4_rebuild(trak, fix_trak)
+
+
+def _handler(trak: bytes) -> bytes | None:
+    hdlr = _mp4_find(trak, [b"mdia", b"hdlr"])
+    return _mp4_payload(hdlr)[8:12] if hdlr else None
+
+
+def set_presentation_order(path: Path, ranks: list[int]) -> int:
+    """Give the video track of a finished mp4 its real presentation times.
+
+    `ranks[i]` is the display position of the i-th sample in decoding order.
+    Decoding times are left alone. The composition offsets and the edit list
+    are rewritten so that the picture displayed k-th plays at k frames, as in
+    any file muxed by something that knows about B-frames. Returns the reorder
+    delay in frames; 0 means the stream has no reordering and nothing was
+    touched. Raises ValueError/OSError, leaving the file as it was, when the
+    file is not in the shape this expects (moov last, constant frame rate)."""
+    delay = max((i - r for i, r in enumerate(ranks)), default=0)
+    if delay <= 0:
+        return 0
+    with open(path, "r+b") as fh:
+        fh.seek(0, 2)
+        total = fh.tell()
+        pos, last = 0, None
+        while pos + 8 <= total:
+            fh.seek(pos)
+            size, typ = struct.unpack(">I4s", fh.read(8))
+            if size == 1:
+                size = struct.unpack(">Q", fh.read(8))[0]
+            elif size == 0:
+                size = total - pos
+            if size < 8:
+                raise ValueError("damaged mp4 box")
+            last = (typ, pos, size)
+            pos += size
+        if pos != total or last is None or last[0] != b"moov":
+            raise ValueError("the moov box is not the last one in the file")
+        fh.seek(last[1])
+        moov = fh.read(last[2])
+
+        def fix_moov(kids):
+            out, done = [], False
+            for typ, box in kids:
+                if typ == b"trak" and not done and _handler(box) == b"vide":
+                    box, done = _retime_video_track(box, ranks, delay), True
+                out.append((typ, box))
+            if not done:
+                raise ValueError("no video track")
+            return out
+
+        new_moov = _mp4_rebuild(moov, fix_moov)
+        fh.seek(last[1])            # the new moov replaces the old one in place:
+        fh.write(new_moov)          # mdat is before it, so no offset moves
+        fh.truncate()
+    return delay
+
+
 def render_pieces(pieces: list, make_cmd, label, verbose: bool) -> None:
     """Render pieces serially (one NVDEC/NVENC chip; parallel jobs corrupt frames).
 
@@ -625,8 +1099,11 @@ def join_pieces(ffmpeg: str, files: list[Path], fps: Fraction, enc: Encoder, out
     video to disk, and avoids a command line with one argument per piece. ffmpeg
     re-derives every timestamp from the bitstream at a constant frame rate,
     which is what makes the result frame-exact regardless of how the individual
-    pieces were produced. `extra_inputs` are further inputs (e.g. audio), and
-    `maps` the -map arguments for the whole output."""
+    pieces were produced. ffmpeg cannot order raw HEVC, though, so the mux gives
+    every packet pts = dts; the real presentation times are written into the
+    finished file afterwards (see PictureScanner and set_presentation_order).
+    `extra_inputs` are further inputs (e.g. audio), and `maps` the -map
+    arguments for the whole output."""
     cmd = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning", "-y",
            "-fflags", "+genpts", "-f", "hevc", "-r", str(fps), "-i", "pipe:0"]
     cmd += extra_inputs + maps
@@ -639,10 +1116,18 @@ def join_pieces(ffmpeg: str, files: list[Path], fps: Fraction, enc: Encoder, out
     if verbose:
         print("  $ cat <pieces> | " + fmt_cmd(cmd))
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    order = PresentationOrder()
     try:
         for f in files:
+            order.start_piece()
             with open(f, "rb") as fh:
-                shutil.copyfileobj(fh, proc.stdin, 1 << 20)
+                while True:
+                    chunk = fh.read(1 << 20)
+                    if not chunk:
+                        break
+                    proc.stdin.write(chunk)
+                    order.feed(chunk)
+            order.end_piece()
         proc.stdin.close()
     except BrokenPipeError:
         pass
@@ -653,6 +1138,21 @@ def join_pieces(ffmpeg: str, files: list[Path], fps: Fraction, enc: Encoder, out
     ts_issues = [ln for ln in err.splitlines() if "monoton" in ln.lower()]
     if ts_issues:
         warn("warn_dts", log="\n".join(ts_issues[:10]))
+
+    # The mux above gave every packet pts = dts (ffmpeg cannot order raw HEVC).
+    # Write the real presentation times into the file now, from the POCs read
+    # while streaming. Whatever goes wrong, the file stays valid as it is.
+    if order.problem is None:
+        try:
+            ranks = display_ranks(order.pics)
+            delay = set_presentation_order(output, ranks)
+            if verbose and delay:
+                print(t("note_order", n=sum(1 for i, r in enumerate(ranks) if i != r),
+                        delay=delay))
+        except (OSError, ValueError, struct.error) as e:
+            order.fail(e)
+    if order.problem:
+        warn("warn_order", name=output.name, why=order.problem)
 
 
 def played_frames(ffprobe: str, path: Path) -> int:

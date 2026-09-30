@@ -44,7 +44,7 @@ from pieces import (RENUMBER, Encoder, Source, add_encoding_args, add_run_args, 
                     played_frames, probe_source, render_pieces, resolve_tools, run, scan_spans,
                     secs, t, tokenize, warn)
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 GOPRO_RE = re.compile(r"^G([A-Z])(\d{2})(\d{4})", re.IGNORECASE)
 

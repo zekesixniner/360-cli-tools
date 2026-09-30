@@ -192,6 +192,23 @@ The tricky parts, and how they are handled:
   exactly. Doing it in MP4 instead means fighting B-frame reorder delays that
   can vary *within* a single GOP, and edit lists that silently hide frames; both
   produce "Non-monotonic DTS" and frozen frames at the joins.
+- **Presentation times.** The price of raw pieces is that the final mux has
+  nothing to derive presentation times from: ffmpeg cannot order raw HEVC, so
+  across B-frame stretches it writes pts = dts. The frames are in the right
+  order, but a seek by time lands a frame or two off and a player that follows
+  timestamps strictly can stutter. So the join reads the picture order count
+  (POC) out of each picture's slice header while it streams the pieces into the
+  mux (no decoding; only the few SPS/PPS fields in front of the POC are parsed)
+  and, once the file is written, stores it in the moov box as composition
+  offsets (`ctts`) and an edit list, as any muxer that knows about B-frames
+  does. `mdat` is not touched, so the bitstream and every decoded frame stay
+  exactly as they were, and the decoding timestamps stay on the constant-rate
+  grid, which is what keeps pieces with different B-frame depths from colliding.
+  The reorder delay is the deepest one found in any piece; a file without
+  B-frames is left alone. If the order cannot be worked out (a piece without
+  parameter sets, say) or the file is not the shape this expects, a warning says
+  so and the file is left as ffmpeg wrote it — valid and in the right order,
+  just with the old timestamps. `-v` reports what was applied.
 - **Different encoders in one file.** NVENC pieces and the source bitstream have
   different VPS/SPS/PPS. Every piece carries its parameter sets **in-band**,
   repeated at each keyframe (`hevc_mp4toannexb` / `dump_extra`), and the output
@@ -210,6 +227,8 @@ The tricky parts, and how they are handled:
 - **Checks.** Every piece is verified for its frame count; the output is verified
   for the frames that actually *play*, not the count the container advertises
   (a frame hidden behind an edit list still shows up in `nb_frames`).
+  `tests/pts_check.py` verifies the presentation times and seeking of a finished
+  file, and `tests/order_check.py` the picture-order reader against the decoder.
 
 Re-encoded pieces are decoded with NVDEC and encoded with NVENC. Transitions and
 black fades go through the CPU (`hwdownload`), because `xfade` has no CUDA

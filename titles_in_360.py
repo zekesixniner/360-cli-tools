@@ -39,7 +39,7 @@ try:
 except ImportError:  # reported properly in main(), after --lang is known
     Image = None
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 # --------------------------------------------------------------------------- #
 # messages

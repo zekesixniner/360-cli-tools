@@ -5,7 +5,7 @@
 # plus the *.norm files (plan, commands, logs, timelines, chapters). Piece
 # hashes, the tool version and the output folder are normalised away.
 set -u
-X="python3 $(realpath "$1")"; S=$(realpath "$2"); O=$(realpath -m "$3")
+X="python3 $(realpath "$1")"; S=$(realpath "$2"); O=$(realpath -m "$3"); T=$(dirname "$(realpath "$0")")
 rm -rf "$O"; mkdir -p "$O"; cd "$S"
 C="--encoder x265 --x265-preset ultrafast -y"
 run() { name=$1; shift
@@ -25,9 +25,16 @@ $X --make-list "$O/ml2.txt" master.mp4 --rows 4 --lang sv -y > /dev/null 2>&1
 $X A.mp4 B.mp4 --fades 1,2 -o z.mp4 --dry-run $C > "$O/e1.txt" 2>&1
 $X --list list1.txt A.mp4 -o z.mp4 $C > "$O/e2.txt" 2>&1
 cd "$O"
+# summary.txt: file hash, packets per stream, and a hash of the decoded frames in
+# the order the decoder outputs them, ignoring timestamps. The file hash changes
+# whenever the container does; the frame hash is what has to stay the same.
 for f in *.mp4; do
-  echo "$f $(md5sum < $f | cut -c1-32) $(ffprobe -v error -count_packets -show_entries stream=nb_read_packets -of csv=p=0 $f | tr '\n' ' ')"
+  echo "$f $(md5sum < $f | cut -c1-32) $(ffprobe -v error -count_packets -show_entries stream=nb_read_packets -of csv=p=0 $f | tr '\n' ' ') frames=$(ffmpeg -v error -nostdin -i $f -map 0:v:0 -fps_mode passthrough -f framemd5 - | grep -v '^#' | cut -d, -f6 | md5sum | cut -c1-32)"
 done > summary.txt
+# pts.txt: presentation timestamps and seeking, per output (tests/pts_check.py)
+for f in *.mp4; do
+  echo "== $f"; python3 "$T/pts_check.py" $f 2>&1
+done > pts.txt
 # normalise: piece hashes and tool version differ by design
 for f in *.dry *.log *.json *.txt; do
   sed -E -e 's/_[0-9a-f]{10}\.hevc/_HASH.hevc/g' -e 's/xfade_concat [0-9.]+/xfade_concat VER/g' \

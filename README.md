@@ -39,8 +39,10 @@ are copied byte for byte; everything else — a transition, a sign, the frames
 up to the nearest keyframe — is re-encoded. Every piece is written as a raw
 HEVC (Annex B) bitstream with its own parameter sets, and the pieces are joined
 by plain byte concatenation into one final mux that re-derives all timing at a
-constant frame rate. That is what lets the camera's own bitstream and NVENC's
-re-encodes share one file with no timestamp problems. Every re-encoded piece is
+constant frame rate, and the picture order read from the slice headers on the
+way through is written into the finished file as presentation times. That is
+what lets the camera's own bitstream and NVENC's re-encodes share one file with
+no timestamp problems, and leaves every frame playing at its proper time. Every re-encoded piece is
 checked for its exact frame count and for frames ffmpeg dropped or repeated
 along the way (which would show as a jump in the picture; the run stops with
 the command that caused it), and the finished file for the frames that
@@ -117,7 +119,8 @@ tests/make_clips.sh /tmp/clips                       # 2:1 HEVC 10-bit test mate
 # xfade: record seven scenarios for two versions, then compare
 tests/xfade_regression.sh old/xfade_concat.py /tmp/clips /tmp/old
 tests/xfade_regression.sh xfade_concat.py     /tmp/clips /tmp/new
-diff /tmp/old/summary.txt /tmp/new/summary.txt       # output MP4 checksums
+diff /tmp/old/summary.txt /tmp/new/summary.txt       # file checksums, packet counts, decoded-frame hash
+cat /tmp/new/pts.txt                                 # presentation times and seeking, per output
 for f in /tmp/old/*.norm; do diff -q $f /tmp/new/${f##*/}; done   # plans, commands, logs
 
 # titles: frame-by-frame comparison with the source
@@ -142,6 +145,15 @@ clip pre-cut mid-GOP (hidden pre-roll behind an edit list), and error paths.
 Moving the engine into `pieces.py` was verified this way: `xfade_concat.py`
 before and after produced bit-identical MP4s, identical plans and ffmpeg
 commands, timelines, chapter files and list templates.
+
+`tests/pts_check.py file.mp4` checks that a finished file has proper presentation
+times (packets, decoded frames, and ten seeks by time that must each return the
+frame they ask for). `tests/order_check.py piece.hevc` (or an .mp4) checks the
+picture-order reader that feeds them against the decoder on any HEVC stream —
+worth running on a piece from the GPU machine (`--keep-work`) and on camera
+footage. Since `pieces.py` 1.1 the output MP4s are no longer bit-identical to
+before, by design (new `ctts`/edit list in moov); the `frames=` hash in
+`summary.txt` — the decoded frames, timestamps ignored — is what must not change.
 
 The NVENC/NVDEC path needs testing on the GPU machine.
 
