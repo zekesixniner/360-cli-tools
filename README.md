@@ -188,8 +188,9 @@ or `not supported` in the error means the card cannot; `Cannot load libcuda` or
 
 | system | what works | by |
 |---|---|---|
-| RTX 2080 Ti, Windows, gyan.dev ffmpeg | NVDEC + NVENC, 8K, real GoPro MAX2 films (xfade and titles) | maintainer |
-| Ubuntu (WSL), ffmpeg 6.1, CPU only (`--encoder x265`) | everything, on synthetic clips (the test suite below) | maintainer |
+| RTX 2080 Ti (driver 616.92), Windows, gyan.dev ffmpeg 9.0.1 | `gpu_check.py`: all ok — NVENC 8- and 10-bit, NVDEC and the whole chain at 8K. Real GoPro MAX2 films (xfade and titles) | maintainer |
+| Ubuntu in WSL1, CPU only (`--encoder x265`) | everything, on synthetic clips (the test suite below) | maintainer |
+| Ubuntu 26.04 in WSL1, ffmpeg 8.0.1 | no GPU there, as expected for WSL1 (`nvidia-smi` missing): `gpu_check.py` says so and points to `--encoder x265` | maintainer |
 | any other card, native Linux, WSL2 with a GPU | **not tested yet** | |
 
 Got it running on something else — or not? Open an issue with the output of
