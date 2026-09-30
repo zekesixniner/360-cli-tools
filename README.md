@@ -12,9 +12,9 @@ rest, frame-exact.
 | `pieces.py` | the engine both share — not run on its own | |
 
 ```powershell
-xfade --list clips.txt -o flight.mp4 --fade-in 1 --fade-out 1
-titles360 flight.mp4 --titles signs.txt --preview all        # check the look
-titles360 flight.mp4 --titles signs.txt -o flight_titled.mp4
+python $HOME\bin\xfade_concat.py --list clips.txt -o flight.mp4 --fade-in 1 --fade-out 1
+python $HOME\bin\titles_in_360.py flight.mp4 --titles signs.txt --preview all   # check the look
+python $HOME\bin\titles_in_360.py flight.mp4 --titles signs.txt -o flight_titled.mp4
 ```
 
 ## Where they fit in the pipeline
@@ -74,23 +74,31 @@ Developed in WSL, run on Windows. Clone in WSL:
 git clone https://github.com/zekesixniner/360-cli-tools.git ~/dev/360-cli-tools
 ```
 
-Then, in PowerShell, run the installer from the repository (replace `Ubuntu`
-with your distribution's name from `wsl -l`):
+Copy the three scripts to a folder on Windows, from WSL (again after every
+update):
 
-```powershell
-powershell -ExecutionPolicy Bypass -File \\wsl$\Ubuntu\home\<you>\dev\360-cli-tools\install.ps1 -Pillow
+```bash
+mkdir -p /mnt/c/Users/<you>/bin
+cp ~/dev/360-cli-tools/{xfade_concat.py,titles_in_360.py,pieces.py} /mnt/c/Users/<you>/bin/
 ```
 
-It copies the three scripts to `$HOME\bin` (`-Dest` to change that) and adds
-two commands to your PowerShell profile, `xfade` and `titles360`. Run it again
-after every update: the scripts are replaced, the profile block too (never
-duplicated), and nothing else in the folder or the profile is touched.
-`-Pillow` also installs or upgrades Pillow.
-
 `pieces.py` must stay next to the two scripts — they import it from there.
+Once, in PowerShell, install Pillow for `titles_in_360.py`:
 
-Without the installer, copy the three `.py` files anywhere and run
-`python <folder>\xfade_concat.py ...`.
+```powershell
+python -m pip install pillow
+```
+
+Then run the scripts with Python, as in all examples here:
+
+```powershell
+python $HOME\bin\xfade_concat.py --help
+python $HOME\bin\titles_in_360.py --help
+```
+
+Nothing is changed in PowerShell's settings, so this works under the default
+execution policy. (A shorter command — a function in your PowerShell profile,
+say — needs a policy that lets the profile run; that is your call to make.)
 
 ## Language
 

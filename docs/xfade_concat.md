@@ -45,10 +45,10 @@ Rather than typing paths by hand, let the tool write a starter list you then edi
 
 ```powershell
 # one row per file, each with its length as a comment
-xfade --make-list clips.txt GS01*-png_ovr.mp4
+python $HOME\bin\xfade_concat.py --make-list clips.txt GS01*-png_ovr.mp4
 
 # 12 range rows spread through one master, ready to have the times replaced
-xfade --make-list clips.txt ..\GS00080-85_png_ovr.mp4 --rows 12
+python $HOME\bin\xfade_concat.py --make-list clips.txt ..\GS00080-85_png_ovr.mp4 --rows 12
 ```
 
 The file it writes carries the column reference and the exact command to run in
@@ -241,21 +241,20 @@ NAL unit (~20x slower, and it adds up over a job).
 
 ## Usage (PowerShell)
 
-`xfade` is the PowerShell function that `install.ps1` sets up; without it, run
-`python C:\Users\<you>\bin\xfade_concat.py` instead. The script expands
-wildcards itself, since PowerShell does not do it for external programs.
+The script expands wildcards itself, since PowerShell does not do it for
+external programs.
 
 ```powershell
 cd D:\done\260811_ESMK_ESMS
 
 # 1.5 s crossfades (default), trim 2 s of shaky start/end of every recording
-xfade GS01*-png_ovr.mp4 -o flight.mp4 --head 2 --tail 2
+python $HOME\bin\xfade_concat.py GS01*-png_ovr.mp4 -o flight.mp4 --head 2 --tail 2
 
 # Check the plan first: what is copied, what is re-encoded
-xfade GS01*-png_ovr.mp4 -o flight.mp4 --fades 2,0,1 --fade-in 1 --fade-out 3 --dry-run
+python $HOME\bin\xfade_concat.py GS01*-png_ovr.mp4 -o flight.mp4 --fades 2,0,1 --fade-in 1 --fade-out 3 --dry-run
 
 # Per-clip control, Swedish messages
-xfade --list clips.txt -o flight.mp4 --lang sv
+python $HOME\bin\xfade_concat.py --list clips.txt -o flight.mp4 --lang sv
 ```
 
 Messages are English or Swedish: `--lang en|sv`, or `$env:GOPRO_LANG = "sv"`

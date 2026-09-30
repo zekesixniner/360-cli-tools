@@ -9,13 +9,13 @@ behind, above or below. Only the stretches where a sign is on screen are
 re-encoded (NVENC); everything else is stream-copied.
 
 ```powershell
-titles360 flight.mp4 --titles signs.txt --preview all          # stills to check the look
-titles360 flight.mp4 --titles signs.txt -o flight_titled.mp4   # the real thing
+python $HOME\bin\titles_in_360.py flight.mp4 --titles signs.txt --preview all          # stills to check the look
+python $HOME\bin\titles_in_360.py flight.mp4 --titles signs.txt -o flight_titled.mp4   # the real thing
 ```
 
 ## The titles file
 
-One sign per row, styles in `[style]` blocks. `titles360 --make-titles signs.txt`
+One sign per row, styles in `[style]` blocks. `python $HOME\bin\titles_in_360.py --make-titles signs.txt`
 writes a commented starting point (`--lang sv` for Swedish comments);
 [`examples/titles_en.txt`](../examples/titles_en.txt) and
 [`examples/titles_sv.txt`](../examples/titles_sv.txt) are the same files, ready
