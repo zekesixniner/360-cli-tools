@@ -118,6 +118,14 @@ cd /tmp/clips && python3 ~/dev/360-cli-tools/titles_in_360.py film.mp4 \
 python3 ~/dev/360-cli-tools/tests/check_titles.py film.mp4 titled.mp4
 ```
 
+To check on the GPU machine that re-encoded stretches are in step with their
+source, frame for frame (it counts frames instead of seeking, so it works on
+joined files too):
+
+```powershell
+python tests\align_check.py new.mp4 new_titled.mp4 2272 516 --cuda
+```
+
 The regression scenarios cover smart and full mode, closed and open GOP, GoPro
 chapters, ranges from a master with speed changes and all three audio modes, a
 clip pre-cut mid-GOP (hidden pre-roll behind an edit list), and error paths.
