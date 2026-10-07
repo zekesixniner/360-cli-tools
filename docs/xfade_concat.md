@@ -213,6 +213,13 @@ The tricky parts, and how they are handled:
   different VPS/SPS/PPS. Every piece carries its parameter sets **in-band**,
   repeated at each keyframe (`hevc_mp4toannexb` / `dump_extra`), and the output
   uses the `hev1` tag.
+- **Mislabelled colour.** A YUV file tagged with the RGB colour matrix (ffprobe
+  shows `yuv420p(pc, gbr/bt709/bt709)`) is what an RGB/RGBA image overlaid onto
+  the video can leave behind. ffmpeg cannot take `gbr` back as an encoder option,
+  and passing the label on would only spread it. The source is treated as bt709
+  instead, with a warning, and the copy pieces get the same corrected colour info
+  in their SPS as the re-encoded ones (`hevc_metadata`, headers only - the
+  pictures are untouched), so the whole output is tagged correctly.
 - **Real frame count, not container metadata.** When a clip was pre-cut mid-GOP,
   the hidden pre-roll counts towards the container's frame tag *and* towards a
   raw packet count, so both overstate how many frames actually play — and every

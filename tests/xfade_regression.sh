@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run xfade_concat.py through seven scenarios and record what it produced.
+# Run xfade_concat.py through eight scenarios and record what it produced.
 #   tests/xfade_regression.sh <xfade_concat.py> <clips dir> <out dir>
 # Run it for two versions and compare:  diff old/summary.txt new/summary.txt
 # plus the *.norm files (plan, commands, logs, timelines, chapters). Piece
@@ -19,6 +19,7 @@ run s4 --list list1.txt --fade 1 --fade-in 0.5 --fade-out 1 --lang sv
 run s5 precut.mp4 A.mp4 --fade 0.8
 run s6 A.mp4 C.mp4 --mode full --fade 1 --bframes 2
 run s7 A.mp4 B.mp4 --fade 1 --transition dissolve --no-audio --min-copy 1
+run s8 mislabelled.mp4 C.mp4 --fade 1
 $X --make-list "$O/ml1.txt" A.mp4 B.mp4 -y > /dev/null 2>&1
 $X --make-list "$O/ml2.txt" master.mp4 --rows 4 --lang sv -y > /dev/null 2>&1
 # error paths

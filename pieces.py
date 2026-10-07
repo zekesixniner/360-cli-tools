@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 RENUMBER = "setpts=N/FRAME_RATE/TB"  # hw-frame safe (touches timestamps only)
 
@@ -51,8 +51,13 @@ PRIMARIES = {"bt709": 1, "bt470m": 4, "bt470bg": 5, "smpte170m": 6, "smpte240m":
 TRANSFER = {"bt709": 1, "gamma22": 4, "gamma28": 5, "smpte170m": 6, "smpte240m": 7,
             "linear": 8, "iec61966-2-4": 11, "bt1361e": 12, "iec61966-2-1": 13,
             "bt2020-10": 14, "bt2020-12": 15, "smpte2084": 16, "arib-std-b67": 18}
-MATRIX = {"rgb": 0, "bt709": 1, "fcc": 4, "bt470bg": 5, "smpte170m": 6, "smpte240m": 7,
+MATRIX = {"rgb": 0, "gbr": 0, "bt709": 1, "fcc": 4, "bt470bg": 5, "smpte170m": 6, "smpte240m": 7,
           "ycgco": 8, "bt2020nc": 9, "bt2020c": 10}
+# ffprobe prints the RGB matrix as "gbr", but ffmpeg's -colorspace option only
+# knows it as "rgb"; passing "gbr" back to an encoder stops the run.
+OPT_NAME = {"gbr": "rgb"}
+RGB_PIX = ("rgb", "bgr", "gbr", "argb", "abgr", "rgba", "bgra", "0rgb", "0bgr",
+           "rgb0", "bgr0", "x2rgb", "x2bgr")
 
 # --------------------------------------------------------------------------- #
 # messages (EN/SV, --lang or GOPRO_LANG like gopro-max-gpx-pipeline)
@@ -69,6 +74,9 @@ MESSAGES = {
         "warn_nb_frames": "warning: {name}: container claims {tag} frames but only {real} are "
                           "actually shown - likely cut mid-GOP from a master (hidden pre-roll "
                           "behind an edit list); using the real, playable count",
+        "warn_rgb_matrix": "warning: {name} is {pix_fmt} (YUV) but tagged as RGB (colour "
+                           "matrix gbr) - mislabelled by an earlier step. Treating it "
+                           "as bt709 and writing the output with correct tags.",
         "warn_dts": "warning: the join reported timestamp problems:\n{log}",
         "warn_order": "warning: {name}: could not write presentation times into the file ({why}). "
                       "Every frame still plays in the right order, but inside B-frame stretches "
@@ -96,6 +104,9 @@ MESSAGES = {
         "warn_nb_frames": "varning: {name}: behållaren uppger {tag} rutor men bara {real} visas "
                           "faktiskt - troligen klippt mitt i en GOP från ett master (dolt förspel "
                           "bakom en edit-list); använder det riktiga, spelbara antalet",
+        "warn_rgb_matrix": "varning: {name} är {pix_fmt} (YUV) men märkt som RGB "
+                           "(färgmatris gbr) - felmärkt av ett tidigare steg. Behandlar "
+                           "den som bt709 och skriver utdata med rätt märkning.",
         "warn_dts": "varning: skarvningen rapporterade tidsstämpelproblem:\n{log}",
         "warn_order": "varning: {name}: kunde inte skriva in visningstider i filen ({why}). "
                       "Alla rutor spelas fortfarande i rätt ordning, men i B-frame-sträckor "
@@ -293,6 +304,7 @@ class Source:
     audio: list[dict]
     color: dict
     raw_offset: float = 0.0  # raw_time = edited_time + raw_offset (edit-list shift)
+    retag: bool = False  # source tags were wrong; copy pieces get the corrected VUI
     keyframes: dict = field(default_factory=dict)  # idx -> Keyframe
 
     @property
@@ -374,6 +386,15 @@ def probe_source(ffprobe: str, path: Path, cls=Source):
 
     color = {k: v[k] for k in ("color_range", "color_space", "color_transfer",
                                "color_primaries") if v.get(k) and v[k] != "unknown"}
+    # YUV pictures tagged with the RGB matrix: an earlier step (an RGB/RGBA image
+    # overlaid onto the video, typically) let the image's colour properties win.
+    # The pixels are ordinary bt709 YUV - only the label is wrong - so fix the
+    # label instead of passing it on to every file made from this one.
+    pix = v.get("pix_fmt", "")
+    retag = color.get("color_space") in ("gbr", "rgb") and not pix.startswith(RGB_PIX)
+    if retag:
+        warn("warn_rgb_matrix", name=path.name, pix_fmt=pix)
+        color["color_space"] = "bt709"
     return cls(
         path=path.resolve(), frames=frames, fps=fps, tb=Fraction(v["time_base"]),
         width=int(v["width"]), height=int(v["height"]), pix_fmt=v.get("pix_fmt", ""),
@@ -381,7 +402,7 @@ def probe_source(ffprobe: str, path: Path, cls=Source):
         v_start=float(v.get("start_time") or 0.0),
         f_start=float(info.get("format", {}).get("start_time") or 0.0),
         audio=[s for s in streams if s.get("codec_type") == "audio"],
-        color=color, raw_offset=raw_offset)
+        color=color, raw_offset=raw_offset, retag=retag)
 
 
 def scan_keyframes(ffmpeg: str, clip: Source, start_s: float, dur_s: float) -> None:
@@ -499,7 +520,7 @@ class Encoder:
                         "color_transfer": "-color_trc",
                         "color_primaries": "-color_primaries"}.items():
             if k in c0.color:
-                a += [flag, c0.color[k]]
+                a += [flag, OPT_NAME.get(c0.color[k], c0.color[k])]
         if args.encode_extra:
             a += shlex.split(args.encode_extra, posix=(os.name != "nt"))
         self.video_args = a
@@ -514,6 +535,7 @@ class Encoder:
         # Pieces are written as raw Annex B, which has no container timestamps and
         # no edit lists at all - so parameter sets must travel in-band, repeated at
         # every keyframe, and the final mux re-derives all timing from the stream.
+        self.vui = vui
         self.enc_bsf = f"hevc_metadata={vui},dump_extra=freq=keyframe"
         self.tag = "hev1"  # parameter sets change mid-stream at the joins
 
@@ -551,6 +573,9 @@ class Encoder:
         cmd = self.base() + pre + [
             "-i", str(clip.path), "-map", "0:v:0", "-frames:v", str(frames),
             "-c", "copy", "-bsf:v", "hevc_mp4toannexb"]
+        if clip.retag:
+            # same corrected VUI as the re-encoded pieces (rewrites the SPS only)
+            cmd[-1] += f",hevc_metadata={self.vui}"
         return cmd + ["-an", "-sn", "-dn", "-f", "hevc", str(out)]
 
     def encode_tail(self, frames: int, out: Path) -> list[str]:

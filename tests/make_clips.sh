@@ -3,7 +3,8 @@
 #   tests/make_clips.sh <dir>
 # 2:1 HEVC 10-bit with B-frames and audio: closed and open GOP, GoPro chapter
 # names, a 40 s master, a clip pre-cut mid-GOP (hidden pre-roll behind an edit
-# list), a 1920x960 film for titles and an 8K sky still for previews.
+# list), a clip mislabelled as RGB, a 1920x960 film for titles and an 8K sky
+# still for previews.
 set -e
 D=${1:?usage: make_clips.sh <dir>}
 mkdir -p "$D" && cd "$D"
@@ -22,6 +23,10 @@ mk GS020101 5 "open-gop=0"
 mk GS010102 6 "open-gop=0"
 mk master 40 "open-gop=0:keyint=50:min-keyint=50"
 ffmpeg -v error -y -ss 3.3 -i master.mp4 -t 6 -c copy precut.mp4
+# YUV tagged with the RGB matrix (gbr), as a PNG overlay can leave it: the tools
+# must fix the label, not pass "gbr" on to the encoder
+ffmpeg -v error -y -i A.mp4 -c copy -bsf:v hevc_metadata=matrix_coefficients=0:video_full_range_flag=1 \
+  -colorspace rgb -color_range pc mislabelled.mp4
 cat > list1.txt <<'L'
 # master ranges, speed, audio, titles, per-row fades
 master.mp4   in=00:00:02  dur=6          title="Take off"
